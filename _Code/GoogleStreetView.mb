@@ -1,0 +1,370 @@
+' Google Street View Tool
+
+' Map Basic tools to open browser window with google street view for the location the user clicked (must be on a road)
+
+' Updated in 2019 for MapInfo 64bit versions
+' Updated in 2021 to version 2.6
+' Updated in 2021 to version 2.7 fix issue with French number format
+' Updated in 2022 to version 2.8.2 using preferred browser
+' Updated by Kalu Ribush
+
+include "MAPBASIC.DEF"
+Include "IMapInfoPro.def"
+Include "Enums.def"
+
+Include "D:\Dropbox (Horsboll-Moller)\3. MB_Kode\mbLibrary\DEBUGLib.def"
+Include "D:\Dropbox (Horsboll-Moller)\3. MB_Kode\mbLibrary\ERRORLib.def"
+Include "D:\Dropbox (Horsboll-Moller)\3. MB_Kode\mbLibrary\FILELib.def"
+Include "D:\Dropbox (Horsboll-Moller)\3. MB_Kode\mbLibrary\MAPPERLib.def"
+Include "D:\Dropbox (Horsboll-Moller)\3. MB_Kode\mbLibrary\RIBBONLib.def"
+Include "D:\Dropbox (Horsboll-Moller)\3. MB_Kode\mbLibrary\TABLELib.def"
+
+Define PATH_IMAGES	ApplicationDirectory$() & "_Icons\"
+
+Define xProgram 		"Street View"
+Define xVersion 		"2.8.3"
+Define xYear			"2022"
+
+declare sub main
+declare sub OpenGoogleStreetView
+declare sub StreetView
+declare sub GoogleMaps
+declare sub GoogleSatellite
+declare sub EnableStreetViewButton
+declare sub DisableStreetViewButton
+declare sub OpenURL(ByVal strURL as string)
+Declare sub EndHandler
+Declare sub WinFocusChangedHandler
+Declare sub WinClosedHandler
+Declare sub CheckActiveWindow(ByVal nWID As Integer)
+
+Declare Sub AddIn_About
+Declare Function AddIn_Name() As String
+Declare Function AddIn_Description() As String
+Declare Function AddIn_Version() As String
+Declare Function AddIn_ImageUri() As String
+
+Global intDirection as integer
+Global x_loc, y_loc As string
+Global strLocale as string
+
+'##################################################################################
+sub main
+
+	Dim	nCtrlIdx As Integer
+
+	' ******************************* PUSH BUTTON Google Street View  *******************************
+	nCtrlIdx = RBNGroupAddControl("butStreetView", "Street"+chr$(13)+"View","",2, "TabMap", "MapSelection") '(sControlName,sCaption,sKeytip,sTabName,sGroupName)
+	If nCtrlIdx > 0 Then
+		'Create & Set the button tooltip
+		Call RBNControlSetToolTipIdx(nCtrlIdx, "Open Google Street View", "Open Google Street View at a location on the map", "A mapper must be active to use this button")
+		'Set the button icon
+		Call RBNControlSetIconsIdx(nCtrlIdx, CONTROL_SIZE_LARGE, "", PATH_IMAGES+"StreetView_32.png")
+		'Set Custom MapBasic Handle to the button
+		Call RBNControlSetCustomMBXHandlerIdx(nCtrlIdx, "OpenGoogleStreetView")
+		Call RBNControlSetMICursorIdx(nCtrlIdx,2,"")  ' (rbnControl,nCursor,sFile)  ' nCursor = 2 = cross
+	End If
+
+	intDirection = 1 ' set default direction as north
+
+	strLocale = systeminfo(SYS_INFO_LOCALE)
+
+	Call CheckActiveWindow(frontwindow())
+
+end sub
+
+' ######################################## Run OpenGoogleStreetView ########################################
+sub OpenGoogleStreetView
+
+Dim intMapWinID as integer
+
+OnError goto Error_Handler
+
+	intMapWinID = FrontWindow()
+
+	' check if IE or Edge installed
+'	If FileExists("C:\Program Files (x86)\Internet Explorer\iexplore.exe") OR FileExists("C:\Program Files\Internet Explorer\iexplore.exe") OR FileExists("C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe") then
+
+		' get coordinates
+		If (WindowInfo(intMapWinID,WIN_INFO_TYPE) = WIN_MAPPER) then
+
+			x_loc = format$(CommandInfo(CMD_INFO_X),"#.#####")
+			'print x_loc
+			y_loc = format$(CommandInfo(CMD_INFO_Y),"#.#####")
+			'print y_loc
+
+			' if in French locale, coordinates will contain a comma instead of ".", so change to "." as this is what is required by Google.
+			If InStr(1,x_loc,",") > 0 then
+				x_loc = Left$(x_loc,InStr(1,x_loc,",")-1) +"."+ Right$(x_loc,len(x_loc)-InStr(1,x_loc,","))
+			End If
+			If InStr(1,y_loc,",") > 0 then
+				y_loc = Left$(y_loc,InStr(1,y_loc,",")-1) +"."+ Right$(y_loc,len(y_loc)-InStr(1,y_loc,","))
+			End If
+			'print x_loc
+			'print y_loc
+
+			' prompt for direction
+				Dialog
+				Title xProgram
+				Width 270
+				Control StaticText
+					Title  "Coordinates Selected "+y_loc+", "+x_loc+"."
+					Position 10, 7
+				Control StaticText
+					Title  "Open in:"
+					Position 10, 20
+				Control StaticText
+					Title  "Direction:"
+					Position 75, 20
+				Control Button
+					Title "Street View"
+					Position 10, 30
+					Width 60
+					Calling StreetView
+				Control PopupMenu
+					ID 1
+					Title "North;North-East;East;South-East;South;South-West;West;North-West"
+					value intDirection
+					into intDirection
+					Position 75,31
+					Width 45
+				Control StaticText
+					Title  "(Street View image will open in a new web browser window. "+
+							"If blank window is displayed, no image exists in this vacinity)"
+					Position 130, 28
+					Width 140
+					Height 34
+				Control Button
+					Title "Google Maps"
+					Position 10, 55
+					Width 60
+					Calling GoogleMaps
+				Control Button
+					Title "Google Satellite"
+					Position 10, 70
+					Width 60
+					Calling GoogleSatellite
+
+				Control CancelButton
+					Position 10, 90
+
+		Else
+			Note "You must click on a mapper"
+		End If
+
+'	Else
+'		Note "Internet Explorer not found"
+'	End If
+
+Exit Sub
+
+error_handler:
+
+	note "@ Error in module OpenGoogleStreetView!!! " + error$()
+
+end sub
+
+
+
+'###################################################################################################
+Sub StreetView
+
+	dim intBearing as integer
+	Dim strURL as string
+
+	intDirection = ReadControlValue(1)
+
+		If intDirection = 1 then
+			intBearing = 0
+		ElseIf intDirection = 2 then
+			intBearing = 45
+		ElseIf intDirection = 3 then
+			intBearing = 90
+		ElseIf intDirection = 4 then
+			intBearing = 135
+		ElseIf intDirection = 5 then
+			intBearing = 180
+		ElseIf intDirection = 6 then
+			intBearing = 225
+		ElseIf intDirection = 7 then
+			intBearing = 270
+		ElseIf intDirection = 8 then
+			intBearing = 315
+		End If
+
+		strURL = "http://maps.google.com/maps?q=&layer=c&cbll="+y_loc+","+x_loc+"&cbp=11,"+intBearing+",0,0,0"
+
+		'print strURL
+
+		Call OpenURL(strURL)
+
+		Dialog Remove
+
+		Call RBNNotificationShow(xProgram,"Opening Google Street View at coordinates "+y_loc+", "+x_loc+".",Notify_Info,4000)
+
+end sub
+
+'###################################################################################################
+Sub GoogleMaps
+
+	Dim strURL as string
+
+		strURL = "https://www.google.com/maps/@?api=1&map_action=map&center="+y_loc+","+x_loc+"&zoom=15&basemap=roadmap"
+
+		Call OpenURL(strURL)
+
+		Dialog Remove
+
+		Call RBNNotificationShow(xProgram,"Opening Google Map at coordinates "+y_loc+", "+x_loc+".",Notify_Info,4000)
+
+end sub
+
+'###################################################################################################
+Sub GoogleSatellite
+
+	Dim strURL as string
+
+		strURL = "https://www.google.com/maps/@?api=1&map_action=map&center="+y_loc+","+x_loc+"&zoom=15&basemap=satellite"
+
+		Call OpenURL(strURL)
+
+		Dialog Remove
+
+		Call RBNNotificationShow(xProgram,"Opening Google Satellite at coordinates "+y_loc+", "+x_loc+".",Notify_Info,4000)
+
+end sub
+
+
+'###################################################################################################
+Sub OpenURL(ByVal strURL as string)
+
+    Dim strExePath, strCmdLine as String
+
+	Call FILELaunch(strURL)
+
+'	If FileExists("C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")  then ' Try MS Edge First
+'		strExePath = "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+'		strCmdLine = strExePath + " " + strURL
+'		Run Program strCmdLine
+'	ElseIf FileExists("C:\Program Files (x86)\Internet Explorer\iexplore.exe") then ' 64bit OS
+'		strExePath = "C:\Program Files (x86)\Internet Explorer\iexplore.exe"
+'		strCmdLine = strExePath + " " + strURL
+'		Run Program strCmdLine
+'	ElseIf FileExists("C:\Program Files\Internet Explorer\iexplore.exe") then ' 32bit OS
+'		strExePath = "C:\Program Files\Internet Explorer\iexplore.exe"
+'		strCmdLine = strExePath + " " + strURL
+'		Run Program strCmdLine
+'	End If
+
+End Sub
+
+'**********************************************************************************************''
+Sub WinFocusChangedHandler
+
+	Call CheckActiveWindow(CommandInfo(CMD_INFO_WIN))
+
+End Sub
+
+'**********************************************************************************************''
+Sub WinClosedHandler
+' Need to call WinClosedHandler to disable Google Street button, in case last window closed.
+' WinFocusChangedHandler will not be called when closing last window.
+' Note, NumWindows() does not include window just closed. If last window closed, the NumWindows() will return 1.
+
+	If NumWindows() - 1 = 0 Then ' if last window closed, then disable buttons
+		'print "last window closed, disabling buttons"
+		Call DisableStreetViewButton
+	End If
+
+End Sub
+
+'**********************************************************************************************''
+Sub CheckActiveWindow(ByVal nWID As Integer)
+
+	If NumWindows() = 0 Then
+		Call DisableStreetViewButton
+	Else
+		If nWID > 0 then 'check active window is valid
+			Do Case WindowInfo(nWID, WIN_INFO_TYPE)
+				Case WIN_MAPPER
+					Call EnableStreetViewButton
+				Case Else
+					Call DisableStreetViewButton
+			End Case
+		Else
+			Call DisableStreetViewButton
+		End If
+	End If
+
+End Sub
+
+' Enable Button Handler
+'*******************************************************************************
+Sub EnableStreetViewButton
+
+	Call RBNGroupEnableControls("", "", "butStreetView", TRUE)
+
+End Sub
+
+' Disable Button Handler
+'*******************************************************************************
+Sub DisableStreetViewButton
+
+	Call RBNGroupEnableControls("", "", "butStreetView", FALSE)
+
+End Sub
+
+'Gives the name of the tool to be displayed in Tool manager
+'*******************************************************************************
+Function AddIn_Name() As String
+	AddIn_Name = xProgram	'+" "+xVersion
+End Function
+
+' Gets the Description of tool added in Tool manager
+'*******************************************************************************
+Function AddIn_Description() As String
+	AddIn_Description = "Add extra button to the MAP tab to open an Internet Explorer window with the Google Street View of the location the user clicked."
+End Function
+
+' Shows Version Information on hovering over the "Version" button of the tool in Tool manager
+'*******************************************************************************
+Function AddIn_Version() As String
+	AddIn_Version = xVersion
+End Function
+
+' Associates a Icon with the tool loaded in Tool Manager
+'*******************************************************************************
+Function AddIn_ImageUri() As String
+	AddIn_ImageUri = PATH_IMAGES + "StreetView_32.png"
+End Function
+
+' Handles clicking on "About" button of the  tool in Tool manager
+'*******************************************************************************
+Sub AddIn_About
+
+	Dialog
+		Title xProgram + " Tool"
+		Width 260
+
+		Control StaticText
+     		Title  xProgram + " will add an extra button to the 'Map' tab on the ribbon"
+     				+ " which will open your preffered browser window with the Google Street View"
+     				+ " of the location the user clicked on a map."
+     			+ chr$(13)
+     			+ chr$(13) + "Version " + xVersion
+			Position 10,10		Width 240	Height 45
+
+		Control OKButton
+			Position 210, 60	Width 40
+
+End Sub
+
+' ######################################## Sub EndHandler ########################################
+Sub EndHandler
+
+Onerror goto 0
+
+	'Remove the Tool from ribbon.
+	Call RBNEndHandler
+
+End Sub
